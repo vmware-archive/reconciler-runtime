@@ -253,8 +253,8 @@ func (w *statusWriterWrapper) Patch(ctx context.Context, obj runtime.Object, pat
 	panic(fmt.Errorf("Patch() is not implemented"))
 }
 
-// InduceFailure is used in conjunction with TableTest's WithReactors field.
-// Tests that want to induce a failure in a row of a TableTest would add:
+// InduceFailure is used in conjunction with reconciler test's WithReactors field.
+// Tests that want to induce a failure in a testcase of a reconciler test would add:
 //   WithReactors: []rifftesting.ReactionFunc{
 //      // Makes calls to create stream return an error.
 //      rifftesting.InduceFailure("create", "Stream"),

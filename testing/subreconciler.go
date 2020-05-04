@@ -17,46 +17,48 @@ limitations under the License.
 package testing
 
 import (
-	"strings"
+	"context"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/projectriff/reconciler-runtime/reconcilers"
 	"github.com/projectriff/reconciler-runtime/tracker"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// Testcase holds a single row of a table test.
-type Testcase struct {
+// SubReconcilerTestCase holds a single testcase of a sub reconciler test.
+type SubReconcilerTestCase struct {
 	// Name is a descriptive name for this test suitable as a first argument to t.Run()
 	Name string
 	// Focus is true if and only if only this and any other focussed tests are to be executed.
-	// If one or more tests are focussed, the overall table test will fail.
+	// If one or more tests are focussed, the overall test suite will fail.
 	Focus bool
 	// Skip is true if and only if this test should be skipped.
 	Skip bool
 
 	// inputs
 
-	// Key identifies the object to be reconciled
-	Key types.NamespacedName
+	// Parent is the initial object passed to the sub reconciler
+	Parent Factory
+	// GivenStashedValues adds these items to the stash passed into the reconciler. Factories are resolved to their object.
+	GivenStashedValues map[reconcilers.StashKey]interface{}
 	// WithReactors installs each ReactionFunc into each fake clientset. ReactionFuncs intercept
 	// each call to the clientset providing the ability to mutate the resource or inject an error.
 	WithReactors []ReactionFunc
 	// GivenObjects build the kubernetes objects which are present at the onset of reconciliation
 	GivenObjects []Factory
-	// APIGivenObjects contains objects that are only available via an API reader instead of the normal cache
-	APIGivenObjects []Factory
 
 	// side effects
 
+	// ExpectParent is the expected parent as mutated after the sub reconciler, or nil if no modification
+	ExpectParent Factory
+	// ExpectStashedValues ensures each value is stashed. Values in the stash that are not expected are ignored. Factories are resolved to their object.
+	ExpectStashedValues map[reconcilers.StashKey]interface{}
 	// ExpectTracks holds the ordered list of Track calls expected during reconciliation
 	ExpectTracks []TrackRequest
 	// ExpectEvents holds the ordered list of events recorded during the reconciliation
@@ -67,8 +69,6 @@ type Testcase struct {
 	ExpectUpdates []Factory
 	// ExpectDeletes holds the ordered list of objects expected to be deleted during reconciliation
 	ExpectDeletes []DeleteRef
-	// ExpectStatusUpdates builds the ordered list of objects whose status is updated during reconciliation
-	ExpectStatusUpdates []Factory
 
 	// outputs
 
@@ -82,22 +82,19 @@ type Testcase struct {
 	// lifecycle
 
 	// Prepare is called before the reconciler is executed. It is intended to prepare the broader
-	// environment before the specific table record is executed. For example, setting mock expectations.
+	// environment before the specific test case is executed. For example, setting mock expectations.
 	Prepare func(t *testing.T) error
-	// CleanUp is called after the table record is finished and all defined assertions complete.
+	// CleanUp is called after the test case is finished and all defined assertions complete.
 	// It is indended to clean up any state created in the Prepare step or during the test
 	// execution, or to make assertions for mocks.
 	CleanUp func(t *testing.T) error
 }
 
-// VerifyFunc is a verification function
-type VerifyFunc func(t *testing.T, result controllerruntime.Result, err error)
+// SubReconcilerTestSuite represents a list of subreconciler test cases.
+type SubReconcilerTestSuite []SubReconcilerTestCase
 
-// Table represents a list of Testcase tests instances.
-type Table []Testcase
-
-// Test executes the test for a table row.
-func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory ReconcilerFactory) {
+// Test executes the test case.
+func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory SubReconcilerFactory) {
 	t.Helper()
 	if tc.Skip {
 		t.SkipNow()
@@ -111,10 +108,6 @@ func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory Reconcile
 		givenObjects = append(givenObjects, object.DeepCopyObject())
 		originalGivenObjects = append(originalGivenObjects, object.DeepCopyObject())
 	}
-	apiGivenObjects := make([]runtime.Object, 0, len(tc.APIGivenObjects))
-	for _, f := range tc.APIGivenObjects {
-		apiGivenObjects = append(apiGivenObjects, f.CreateObject())
-	}
 
 	clientWrapper := newClientWrapperWithScheme(scheme, givenObjects...)
 	for i := range tc.WithReactors {
@@ -122,14 +115,13 @@ func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory Reconcile
 		reactor := tc.WithReactors[len(tc.WithReactors)-1-i]
 		clientWrapper.PrependReactor("*", "*", reactor)
 	}
-	apiReader := newClientWrapperWithScheme(scheme, apiGivenObjects...)
 	tracker := createTracker()
 	recorder := &eventRecorder{
 		events: []Event{},
 		scheme: scheme,
 	}
 	log := TestLogger(t)
-	c := factory(t, tc, clientWrapper, apiReader, tracker, recorder, log)
+	c := factory(t, tc, clientWrapper, tracker, recorder, log)
 
 	if tc.CleanUp != nil {
 		defer func() {
@@ -144,10 +136,18 @@ func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory Reconcile
 		}
 	}
 
+	ctx := reconcilers.WithStash(context.Background())
+	for k, v := range tc.GivenStashedValues {
+		if f, ok := v.(Factory); ok {
+			v = f.CreateObject()
+		}
+		reconcilers.StashValue(ctx, k, v)
+	}
+
+	parent := tc.Parent.CreateObject()
+
 	// Run the Reconcile we're testing.
-	result, err := c.Reconcile(reconcile.Request{
-		NamespacedName: tc.Key,
-	})
+	result, err := c.Reconcile(ctx, parent)
 
 	if (err != nil) != tc.ShouldErr {
 		t.Errorf("Reconcile() error = %v, ExpectErr %v", err, tc.ShouldErr)
@@ -161,6 +161,24 @@ func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory Reconcile
 
 	if tc.Verify != nil {
 		tc.Verify(t, result, err)
+	}
+
+	expectedParent := tc.Parent.CreateObject()
+	if tc.ExpectParent != nil {
+		expectedParent = tc.ExpectParent.CreateObject()
+	}
+	if diff := cmp.Diff(expectedParent, parent, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("Unexpected parent mutations(-expected, +actual): %s", diff)
+	}
+
+	for key, expected := range tc.ExpectStashedValues {
+		if f, ok := expected.(Factory); ok {
+			expected = f.CreateObject()
+		}
+		actual := reconcilers.RetrieveValue(ctx, key)
+		if diff := cmp.Diff(expected, actual, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("Unexpected stash value %q (-expected, +actual): %s", key, diff)
+		}
 	}
 
 	actualTracks := tracker.getTrackRequests()
@@ -217,55 +235,16 @@ func (tc *Testcase) Test(t *testing.T, scheme *runtime.Scheme, factory Reconcile
 		}
 	}
 
-	compareActions(t, "status update", tc.ExpectStatusUpdates, clientWrapper.statusUpdateActions, statusSubresourceOnly, ignoreLastTransitionTime, safeDeployDiff, cmpopts.EquateEmpty())
-
 	// Validate the given objects are not mutated by reconciliation
 	if diff := cmp.Diff(originalGivenObjects, givenObjects, safeDeployDiff, cmpopts.EquateEmpty()); diff != "" {
 		t.Errorf("Given objects mutated by test %s (-expected, +actual): %v", tc.Name, diff)
 	}
 }
 
-func compareActions(t *testing.T, actionName string, expectedActionFactories []Factory, actualActions []objectAction, diffOptions ...cmp.Option) {
+// Test executes the subreconciler test suite.
+func (tb SubReconcilerTestSuite) Test(t *testing.T, scheme *runtime.Scheme, factory SubReconcilerFactory) {
 	t.Helper()
-	for i, exp := range expectedActionFactories {
-		if i >= len(actualActions) {
-			t.Errorf("Missing %s: %#v", actionName, exp.CreateObject())
-			continue
-		}
-		actual := actualActions[i].GetObject()
-
-		if diff := cmp.Diff(exp.CreateObject(), actual, diffOptions...); diff != "" {
-			t.Errorf("Unexpected %s (-expected, +actual): %s", actionName, diff)
-		}
-	}
-	if actual, expected := len(actualActions), len(expectedActionFactories); actual > expected {
-		for _, extra := range actualActions[expected:] {
-			t.Errorf("Extra %s: %#v", actionName, extra)
-		}
-	}
-}
-
-var (
-	ignoreLastTransitionTime = cmp.FilterPath(func(p cmp.Path) bool {
-		return strings.HasSuffix(p.String(), "LastTransitionTime.Inner.Time")
-	}, cmp.Ignore())
-	ignoreTypeMeta = cmp.FilterPath(func(p cmp.Path) bool {
-		path := p.String()
-		return strings.HasSuffix(path, "TypeMeta.APIVersion") || strings.HasSuffix(path, "TypeMeta.Kind")
-	}, cmp.Ignore())
-
-	statusSubresourceOnly = cmp.FilterPath(func(p cmp.Path) bool {
-		q := p.String()
-		return q != "" && !strings.HasPrefix(q, "Status")
-	}, cmp.Ignore())
-
-	safeDeployDiff = cmpopts.IgnoreUnexported(resource.Quantity{})
-)
-
-// Test executes the whole suite of the table tests.
-func (tb Table) Test(t *testing.T, scheme *runtime.Scheme, factory ReconcilerFactory) {
-	t.Helper()
-	focussed := Table{}
+	focussed := SubReconcilerTestSuite{}
 	for _, test := range tb {
 		if test.Focus {
 			focussed = append(focussed, test)
@@ -283,27 +262,11 @@ func (tb Table) Test(t *testing.T, scheme *runtime.Scheme, factory ReconcilerFac
 		})
 	}
 	if len(focussed) > 0 {
-		t.Errorf("%d tests out of %d are still focussed, so the table test fails", len(focussed), len(tb))
+		t.Errorf("%d tests out of %d are still focussed, so the test suite fails", len(focussed), len(tb))
 	}
 }
 
-// ReconcilerFactory returns a Reconciler.Interface to perform reconciliation in table test,
+// SubReconcilerFactory returns a Reconciler.Interface to perform reconciliation of a test case,
 // ActionRecorderList/EventList to capture k8s actions/events produced during reconciliation
 // and FakeStatsReporter to capture stats.
-type ReconcilerFactory func(t *testing.T, row *Testcase, client client.Client, apiReader client.Reader, tracker tracker.Tracker, recorder record.EventRecorder, log logr.Logger) reconcile.Reconciler
-
-type DeleteRef struct {
-	Group     string
-	Kind      string
-	Namespace string
-	Name      string
-}
-
-func NewDeleteRef(action DeleteAction) DeleteRef {
-	return DeleteRef{
-		Group:     action.GetResource().Group,
-		Kind:      action.GetResource().Resource,
-		Namespace: action.GetNamespace(),
-		Name:      action.GetName(),
-	}
-}
+type SubReconcilerFactory func(t *testing.T, rtc *SubReconcilerTestCase, client client.Client, tracker tracker.Tracker, recorder record.EventRecorder, log logr.Logger) reconcilers.SubReconciler
