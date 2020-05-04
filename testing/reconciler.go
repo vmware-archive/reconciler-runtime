@@ -20,16 +20,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/projectriff/reconciler-runtime/tracker"
+	"github.com/projectriff/reconciler-runtime/reconcilers"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	controllerruntime "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -129,7 +126,14 @@ func (tc *ReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory
 		scheme: scheme,
 	}
 	log := TestLogger(t)
-	c := factory(t, tc, clientWrapper, apiReader, tracker, recorder, log)
+	c := factory(t, tc, reconcilers.Config{
+		Client:    clientWrapper,
+		APIReader: apiReader,
+		Tracker:   tracker,
+		Recorder:  recorder,
+		Scheme:    scheme,
+		Log:       log,
+	})
 
 	if tc.CleanUp != nil {
 		defer func() {
@@ -290,7 +294,7 @@ func (tb ReconcilerTestSuite) Test(t *testing.T, scheme *runtime.Scheme, factory
 // ReconcilerFactory returns a Reconciler.Interface to perform reconciliation of a test case,
 // ActionRecorderList/EventList to capture k8s actions/events produced during reconciliation
 // and FakeStatsReporter to capture stats.
-type ReconcilerFactory func(t *testing.T, rtc *ReconcilerTestCase, client client.Client, apiReader client.Reader, tracker tracker.Tracker, recorder record.EventRecorder, log logr.Logger) reconcile.Reconciler
+type ReconcilerFactory func(t *testing.T, rtc *ReconcilerTestCase, c reconcilers.Config) reconcile.Reconciler
 
 type DeleteRef struct {
 	Group     string

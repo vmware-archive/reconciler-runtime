@@ -20,15 +20,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/projectriff/reconciler-runtime/reconcilers"
-	"github.com/projectriff/reconciler-runtime/tracker"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
 	controllerruntime "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // SubReconcilerTestCase holds a single testcase of a sub reconciler test.
@@ -121,7 +117,15 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 		scheme: scheme,
 	}
 	log := TestLogger(t)
-	c := factory(t, tc, clientWrapper, tracker, recorder, log)
+	c := factory(t, tc, reconcilers.Config{
+		Client: clientWrapper,
+		// TODO add APIReader support to sub reconcilers
+		// APIReader: apiReader,
+		Tracker:  tracker,
+		Recorder: recorder,
+		Scheme:   scheme,
+		Log:      log,
+	})
 
 	if tc.CleanUp != nil {
 		defer func() {
@@ -269,4 +273,4 @@ func (tb SubReconcilerTestSuite) Test(t *testing.T, scheme *runtime.Scheme, fact
 // SubReconcilerFactory returns a Reconciler.Interface to perform reconciliation of a test case,
 // ActionRecorderList/EventList to capture k8s actions/events produced during reconciliation
 // and FakeStatsReporter to capture stats.
-type SubReconcilerFactory func(t *testing.T, rtc *SubReconcilerTestCase, client client.Client, tracker tracker.Tracker, recorder record.EventRecorder, log logr.Logger) reconcilers.SubReconciler
+type SubReconcilerFactory func(t *testing.T, rtc *SubReconcilerTestCase, c reconcilers.Config) reconcilers.SubReconciler
