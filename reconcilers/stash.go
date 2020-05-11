@@ -18,6 +18,7 @@ package reconcilers
 
 import (
 	"context"
+	"fmt"
 )
 
 const stashNonce string = "controller-stash-nonce"
@@ -31,11 +32,17 @@ func WithStash(ctx context.Context) context.Context {
 type StashKey string
 
 func StashValue(ctx context.Context, key StashKey, value interface{}) {
-	stash := ctx.Value(stashNonce).(stashMap)
+	stash, ok := ctx.Value(stashNonce).(stashMap)
+	if !ok {
+		panic(fmt.Errorf("context not configured for stashing, call `ctx = WithStash(ctx)`"))
+	}
 	stash[key] = value
 }
 
 func RetrieveValue(ctx context.Context, key StashKey) interface{} {
-	stash := ctx.Value(stashNonce).(stashMap)
+	stash, ok := ctx.Value(stashNonce).(stashMap)
+	if !ok {
+		panic(fmt.Errorf("context not configured for stashing, call `ctx = WithStash(ctx)`"))
+	}
 	return stash[key]
 }

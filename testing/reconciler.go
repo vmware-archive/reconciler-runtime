@@ -39,6 +39,8 @@ type ReconcilerTestCase struct {
 	Focus bool
 	// Skip is true if and only if this test should be skipped.
 	Skip bool
+	// Metadata contains arbitrary value that are stored with the test case
+	Metadata map[string]interface{}
 
 	// inputs
 
@@ -201,8 +203,8 @@ func (tc *ReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory
 		}
 	}
 
-	compareActions(t, "create", tc.ExpectCreates, clientWrapper.createActions, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
-	compareActions(t, "update", tc.ExpectUpdates, clientWrapper.updateActions, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
+	compareActions(t, "create", tc.ExpectCreates, clientWrapper.createActions, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
+	compareActions(t, "update", tc.ExpectUpdates, clientWrapper.updateActions, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
 
 	for i, exp := range tc.ExpectDeletes {
 		if i >= len(clientWrapper.deleteActions) {
@@ -221,7 +223,7 @@ func (tc *ReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory
 		}
 	}
 
-	compareActions(t, "status update", tc.ExpectStatusUpdates, clientWrapper.statusUpdateActions, statusSubresourceOnly, ignoreLastTransitionTime, safeDeployDiff, cmpopts.EquateEmpty())
+	compareActions(t, "status update", tc.ExpectStatusUpdates, clientWrapper.statusUpdateActions, statusSubresourceOnly, IgnoreLastTransitionTime, safeDeployDiff, cmpopts.EquateEmpty())
 
 	// Validate the given objects are not mutated by reconciliation
 	if diff := cmp.Diff(originalGivenObjects, givenObjects, safeDeployDiff, cmpopts.EquateEmpty()); diff != "" {
@@ -250,7 +252,7 @@ func compareActions(t *testing.T, actionName string, expectedActionFactories []F
 }
 
 var (
-	ignoreLastTransitionTime = cmp.FilterPath(func(p cmp.Path) bool {
+	IgnoreLastTransitionTime = cmp.FilterPath(func(p cmp.Path) bool {
 		return strings.HasSuffix(p.String(), "LastTransitionTime.Inner.Time")
 	}, cmp.Ignore())
 	ignoreTypeMeta = cmp.FilterPath(func(p cmp.Path) bool {

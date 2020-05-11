@@ -22,9 +22,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/projectriff/reconciler-runtime/apis"
 	"github.com/projectriff/reconciler-runtime/reconcilers"
 	"k8s.io/apimachinery/pkg/runtime"
 	controllerruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // SubReconcilerTestCase holds a single testcase of a sub reconciler test.
@@ -36,6 +38,8 @@ type SubReconcilerTestCase struct {
 	Focus bool
 	// Skip is true if and only if this test should be skipped.
 	Skip bool
+	// Metadata contains arbitrary value that are stored with the test case
+	Metadata map[string]interface{}
 
 	// inputs
 
@@ -48,6 +52,8 @@ type SubReconcilerTestCase struct {
 	WithReactors []ReactionFunc
 	// GivenObjects build the kubernetes objects which are present at the onset of reconciliation
 	GivenObjects []Factory
+	// APIGivenObjects contains objects that are only available via an API reader instead of the normal cache
+	APIGivenObjects []Factory
 
 	// side effects
 
@@ -70,6 +76,9 @@ type SubReconcilerTestCase struct {
 
 	// ShouldErr is true if and only if reconciliation is expected to return an error
 	ShouldErr bool
+	// ShouldPanic is true if and only if reconciliation is expected to panic. A panic should only be
+	// used to indicate the reconciler is misconfigured.
+	ShouldPanic bool
 	// ExpectedResult is compared to the result returned from the reconciler if there was no error
 	ExpectedResult controllerruntime.Result
 	// Verify provides the reconciliation Result and error for custom assertions
@@ -104,6 +113,10 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 		givenObjects = append(givenObjects, object.DeepCopyObject())
 		originalGivenObjects = append(originalGivenObjects, object.DeepCopyObject())
 	}
+	apiGivenObjects := make([]runtime.Object, 0, len(tc.APIGivenObjects))
+	for _, f := range tc.APIGivenObjects {
+		apiGivenObjects = append(apiGivenObjects, f.CreateObject())
+	}
 
 	clientWrapper := newClientWrapperWithScheme(scheme, givenObjects...)
 	for i := range tc.WithReactors {
@@ -111,6 +124,7 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 		reactor := tc.WithReactors[len(tc.WithReactors)-1-i]
 		clientWrapper.PrependReactor("*", "*", reactor)
 	}
+	apiReader := newClientWrapperWithScheme(scheme, apiGivenObjects...)
 	tracker := createTracker()
 	recorder := &eventRecorder{
 		events: []Event{},
@@ -118,13 +132,12 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 	}
 	log := TestLogger(t)
 	c := factory(t, tc, reconcilers.Config{
-		Client: clientWrapper,
-		// TODO add APIReader support to sub reconcilers
-		// APIReader: apiReader,
-		Tracker:  tracker,
-		Recorder: recorder,
-		Scheme:   scheme,
-		Log:      log,
+		Client:    clientWrapper,
+		APIReader: apiReader,
+		Tracker:   tracker,
+		Recorder:  recorder,
+		Scheme:    scheme,
+		Log:       log,
 	})
 
 	if tc.CleanUp != nil {
@@ -151,7 +164,17 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 	parent := tc.Parent.CreateObject()
 
 	// Run the Reconcile we're testing.
-	result, err := c.Reconcile(ctx, parent)
+	result, err := func(ctx context.Context, parent apis.Object) (reconcile.Result, error) {
+		if tc.ShouldPanic {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Error("expected Reconcile() to panic")
+				}
+			}()
+		}
+
+		return c.Reconcile(ctx, parent)
+	}(ctx, parent)
 
 	if (err != nil) != tc.ShouldErr {
 		t.Errorf("Reconcile() error = %v, ExpectErr %v", err, tc.ShouldErr)
@@ -171,7 +194,7 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 	if tc.ExpectParent != nil {
 		expectedParent = tc.ExpectParent.CreateObject()
 	}
-	if diff := cmp.Diff(expectedParent, parent, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
+	if diff := cmp.Diff(expectedParent, parent, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
 		t.Errorf("Unexpected parent mutations(-expected, +actual): %s", diff)
 	}
 
@@ -180,7 +203,7 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 			expected = f.CreateObject()
 		}
 		actual := reconcilers.RetrieveValue(ctx, key)
-		if diff := cmp.Diff(expected, actual, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
+		if diff := cmp.Diff(expected, actual, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty()); diff != "" {
 			t.Errorf("Unexpected stash value %q (-expected, +actual): %s", key, diff)
 		}
 	}
@@ -219,8 +242,8 @@ func (tc *SubReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, fact
 		}
 	}
 
-	compareActions(t, "create", tc.ExpectCreates, clientWrapper.createActions, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
-	compareActions(t, "update", tc.ExpectUpdates, clientWrapper.updateActions, ignoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
+	compareActions(t, "create", tc.ExpectCreates, clientWrapper.createActions, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
+	compareActions(t, "update", tc.ExpectUpdates, clientWrapper.updateActions, IgnoreLastTransitionTime, safeDeployDiff, ignoreTypeMeta, cmpopts.EquateEmpty())
 
 	for i, exp := range tc.ExpectDeletes {
 		if i >= len(clientWrapper.deleteActions) {

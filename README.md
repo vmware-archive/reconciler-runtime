@@ -369,7 +369,6 @@ For more complex reconcilers, the number of moving parts can make it difficult t
 
 - `Key` is replaced with `Parent` since the parent resource is not lookedup, but handed to the reconciler. `ExpectParent` is the mutated value of the parent resource after the reconciler runs.
 - `GivenStashedValues` is a map of stashed value to seed, `ExpectStashedValues` are individually compared with the actual stashed value after the reconciler runs.
-- `APIGivenObjects` is not available
 - `ExpectStatusUpdates` is not available
 
 Example:
