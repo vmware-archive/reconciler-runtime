@@ -1,6 +1,6 @@
 # reconciler-runtime
 
-`reconciler-runtime` builds on top of the [Kubernetes `controller-runtime`](https://github.com/kubernetes-sigs/controller-runtime) project. `controller-runtime` provides infrastructure for creating and operating controllers, but provides little support for the business logic of implementing a reconciler within a controller. The [`Reconciler` interface](https://godoc.org/sigs.k8s.io/controller-runtime/pkg/reconcile#Reconciler) provided by `controller-runtime` is the handoff point with `reconciler-runtime`.
+`reconciler-runtime` is an opinionated framework for authoring and testing Kubernetes reconcilers using [`controller-runtime`](https://github.com/kubernetes-sigs/controller-runtime) project. `controller-runtime` provides infrastructure for creating and operating controllers, but provides little support for the business logic of implementing a reconciler within the controller. The [`Reconciler` interface](https://godoc.org/sigs.k8s.io/controller-runtime/pkg/reconcile#Reconciler) provided by `controller-runtime` is the handoff point with `reconciler-runtime`.
 
 ## Reconcilers
 
