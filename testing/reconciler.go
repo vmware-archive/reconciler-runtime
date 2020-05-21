@@ -160,7 +160,7 @@ func (tc *ReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory
 	}
 	if err == nil {
 		// result is only significant if there wasn't an error
-		if diff := cmp.Diff(tc.ExpectedResult, result); diff != "" {
+		if diff := cmp.Diff(normalizeResult(tc.ExpectedResult), normalizeResult(result)); diff != "" {
 			t.Errorf("Unexpected result (-expected, +actual): %s", diff)
 		}
 	}
@@ -229,6 +229,14 @@ func (tc *ReconcilerTestCase) Test(t *testing.T, scheme *runtime.Scheme, factory
 	if diff := cmp.Diff(originalGivenObjects, givenObjects, safeDeployDiff, cmpopts.EquateEmpty()); diff != "" {
 		t.Errorf("Given objects mutated by test %s (-expected, +actual): %v", tc.Name, diff)
 	}
+}
+
+func normalizeResult(result controllerruntime.Result) controllerruntime.Result {
+	// RequeueAfter implies Requeue, no need to set both
+	if result.RequeueAfter != 0 {
+		result.Requeue = false
+	}
+	return result
 }
 
 func compareActions(t *testing.T, actionName string, expectedActionFactories []Factory, actualActions []objectAction, diffOptions ...cmp.Option) {

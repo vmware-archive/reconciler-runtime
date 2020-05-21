@@ -133,15 +133,29 @@ func (r *ParentReconciler) reconcile(ctx context.Context, parent apis.Object) (c
 		return ctrl.Result{}, nil
 	}
 
+	aggregateResult := ctrl.Result{}
 	for _, reconciler := range r.SubReconcilers {
-		if _, err := reconciler.Reconcile(ctx, parent); err != nil {
+		result, err := reconciler.Reconcile(ctx, parent)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
+		aggregateResult = r.aggregateResult(result, aggregateResult)
 	}
 
 	r.copyGeneration(parent)
 
-	return ctrl.Result{}, nil
+	return aggregateResult, nil
+}
+
+func (r *ParentReconciler) aggregateResult(result, aggregate ctrl.Result) ctrl.Result {
+	if result.RequeueAfter != 0 && (aggregate.RequeueAfter == 0 || result.RequeueAfter < aggregate.RequeueAfter) {
+		aggregate.RequeueAfter = result.RequeueAfter
+	}
+	if result.Requeue {
+		aggregate.Requeue = true
+	}
+
+	return aggregate
 }
 
 func (r *ParentReconciler) copyGeneration(obj apis.Object) {
@@ -181,6 +195,7 @@ type SyncReconciler struct {
 	//
 	// Expected function signature:
 	//     func(ctx context.Context, parent apis.Object) error
+	//     func(ctx context.Context, parent apis.Object) (ctrl.Result, error)
 	Sync interface{}
 
 	Config
@@ -194,26 +209,35 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager, bldr *builder.Builde
 }
 
 func (r *SyncReconciler) Reconcile(ctx context.Context, parent apis.Object) (ctrl.Result, error) {
-	err := r.sync(ctx, parent)
+	result, err := r.sync(ctx, parent)
 	if err != nil {
 		r.Log.Error(err, "unable to sync", typeName(parent), parent)
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
-func (r *SyncReconciler) sync(ctx context.Context, parent apis.Object) error {
+func (r *SyncReconciler) sync(ctx context.Context, parent apis.Object) (ctrl.Result, error) {
 	fn := reflect.ValueOf(r.Sync)
 	out := fn.Call([]reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(parent),
 	})
+	result := ctrl.Result{}
 	var err error
-	if !out[0].IsNil() {
-		err = out[0].Interface().(error)
+	switch len(out) {
+	case 2:
+		result = out[0].Interface().(ctrl.Result)
+		if !out[1].IsNil() {
+			err = out[1].Interface().(error)
+		}
+	case 1:
+		if !out[0].IsNil() {
+			err = out[0].Interface().(error)
+		}
 	}
-	return err
+	return result, err
 }
 
 // ChildReconciler is a sub reconciler that manages a single child resource for
